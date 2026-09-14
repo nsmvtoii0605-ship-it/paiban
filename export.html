@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>排班匯出（電腦版）</title>
+<style>
+  body{margin:0;background:#f5f6f8;color:#1f2430;font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif}
+  .wrap{max-width:1100px;margin:0 auto;padding:16px}
+  h1{font-size:19px;margin:0 0 4px}
+  .sub{font-size:12.5px;color:#6b7280;margin-bottom:12px}
+  .bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+  select,button{font-size:14px;padding:9px 12px;border:1px solid #e4e7eb;border-radius:9px;background:#fff;cursor:pointer}
+  button.primary{background:#2f6f6a;border-color:#2f6f6a;color:#fff;font-weight:600}
+  button.reload{background:#eef1f4}
+  .status{font-size:12.5px;color:#6b7280}
+  .status.err{color:#b91c1c}
+  .tablewrap{overflow:auto;border:1px solid #e4e7eb;border-radius:10px;max-height:72vh;background:#fff}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>排班匯出（電腦版）</h1>
+  <div class="sub">直接讀取雲端資料、不需登入畫休頁。指定休＝綠底 DO、一般休 DO、假別 A年8；表格下方有休假人數與可排人力。</div>
+  <div class="bar">
+    <label style="font-size:13px;color:#6b7280">期別</label>
+    <select id="periodSel"></select>
+    <button class="reload" id="btnReload">重新讀取</button>
+    <button class="primary" id="btnXls">下載 Excel（含底色）</button>
+    <button id="btnXlsx">下載 .xlsx</button>
+    <button id="btnCopy">複製純文字</button>
+    <span class="status" id="status">讀取中…</span>
+  </div>
+  <div class="tablewrap" id="table"></div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script>
+const DBURL='https://paiban-5e685-default-rtdb.asia-southeast1.firebasedatabase.app';
+const ROOT='main';
+const offMark='DO', desigMark='指';
+const DEFAULTS={ year:2026, month:10, quota:11, desigMax:3, holidayCap:5, holidays:{10:'國慶'} };
+const ROSTER=[
+  {zh:'吳秀真',en:'Amy'},{zh:'洪郁凌',en:'LisaH'},{zh:'謝庭湘',en:'Ronny'},{zh:'謝翔舟',en:'Poker'},
+  {zh:'張惠瑄',en:'Sherry'},{zh:'葉庭漢',en:'Hank'},{zh:'陳佩琪',en:'Peggy'},{zh:'盧詩怡',en:'Alice'},
+  {zh:'施維宣',en:'LisaS'},{zh:'蔡宜潔',en:'Jie'},{zh:'謝岱凌',en:'Livi'},{zh:'江瑋琳',en:'Doreen'},
+  {zh:'張宮毓',en:'Miya'},{zh:'陳孟嘉',en:'Stella'},{zh:'侯美雪',en:'Vicky'},{zh:'曾佳慧',en:'Linda'},
+  {zh:'王怡茜',en:'Bella'},{zh:'吳珮菁',en:'Nova'},{zh:'陳又慈',en:'Yoyo'},{zh:'林玉英',en:'Ivy'},
+  {zh:'蘇惠君',en:'Elaine'},{zh:'蘇芳玉',en:'Ellen'},{zh:'吳淑芬',en:'Rita'},{zh:'吳淑敏',en:'Min'},
+  {zh:'葉千華',en:'Ally'},{zh:'楊紫棻',en:'Uie'},
+];
+const WD=['日','一','二','三','四','五','六'];
+const $=id=>document.getElementById(id);
+const sanitize=s=>(s||'').trim().replace(/[.#$/\[\]]/g,'_');
+
+let cfg=JSON.parse(JSON.stringify(DEFAULTS));
+let allP={}, off={}, desig={}, leave={}, notes={};
+const dim=()=>new Date(cfg.year,cfg.month,0).getDate();
+const firstDow=()=>new Date(cfg.year,cfg.month-1,1).getDay();
+const isWeekend=d=>{const w=new Date(cfg.year,cfg.month-1,d).getDay();return w===0||w===6;};
+const weekday=d=>WD[new Date(cfg.year,cfg.month-1,d).getDay()];
+const isHoliday=d=>isWeekend(d)||!!(cfg.holidays&&cfg.holidays[d]);
+const holLabel=d=>{const h=cfg.holidays&&cfg.holidays[d];return (typeof h==='string')?h:'';};
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const offOf=k=>off[k]||{}, desOf=k=>desig[k]||{}, lvOf=k=>leave[k]||{};
+function offSet(k){const s=new Set();[desOf(k),offOf(k),lvOf(k)].forEach(o=>Object.keys(o).forEach(d=>s.add(+d)));return s;}
+function offOnDay(d){let c=0;ROSTER.forEach(p=>{if(offSet(sanitize(p.zh)).has(d))c++;});return c;}
+
+async function load(){
+  $('status').className='status'; $('status').textContent='讀取中…';
+  try{
+    const res=await fetch(DBURL+'/schedule/'+ROOT+'.json',{cache:'no-store'});
+    const data=(await res.json())||{};
+    const c=data.config||{};
+    cfg=JSON.parse(JSON.stringify(DEFAULTS));
+    ['year','month','quota','desigMax','holidayCap'].forEach(k=>{if(c[k]!=null)cfg[k]=c[k];});
+    if(c.holidays!=null)cfg.holidays=c.holidays||{};
+    allP=data.p||{};
+    const keys=Object.keys(allP).sort();
+    const sel=$('periodSel'); const want=cfg.year+'-'+cfg.month;
+    sel.innerHTML=keys.map(k=>'<option'+(k===want?' selected':'')+'>'+k+'</option>').join('')||'<option>'+want+'</option>';
+    applyPeriod(sel.value||want);
+    $('status').textContent='已讀取 '+new Date().toLocaleTimeString();
+  }catch(e){
+    $('status').className='status err';
+    $('status').textContent='讀取失敗：'+e.message+'（若是 file:// 開啟遇到 CORS，把畫面截給我）';
+  }
+}
+function applyPeriod(pk){
+  const pd=allP[pk]||{};
+  off=pd.off||{}; desig=pd.desig||{}; leave=pd.leave||{}; notes=pd.notes||{};
+  // 若期別與 config 年月不同，依期別字串調整月曆
+  const m=/^(\d+)-(\d+)$/.exec(pk); if(m){ cfg.year=+m[1]; cfg.month=+m[2]; }
+  render();
+}
+function cellMark(k,d){ if(desOf(k)[d])return desigMark; if(offOf(k)[d])return offMark; const l=lvOf(k)[d]; if(l!=null)return (l==='A')?'A':('A'+l); return ''; }
+function buildMatrix(){
+  const N=dim(), head=['姓名','C-Name']; for(let d=1;d<=N;d++)head.push(String(d)); head.push('特殊需求');
+  const rows=[head];
+  ROSTER.forEach(p=>{const k=sanitize(p.zh),r=[p.zh,p.en];for(let d=1;d<=N;d++)r.push(cellMark(k,d));r.push((notes[k]||'').replace(/\n/g,' '));rows.push(r);});
+  const t1=['休假人數','']; for(let d=1;d<=N;d++)t1.push(offOnDay(d)); t1.push('');
+  const t2=['可排人力','']; for(let d=1;d<=N;d++)t2.push(ROSTER.length-offOnDay(d)); t2.push('');
+  rows.push(t1); rows.push(t2); return rows;
+}
+function buildTable(){
+  const N=dim(),bd='border:1px solid #c8ced6;';
+  const td=(t,s)=>'<td style="'+bd+'padding:3px 6px;text-align:center;white-space:nowrap;'+(s||'')+'">'+(t===''?'&nbsp;':t)+'</td>';
+  const th=(t,s,sp)=>'<th '+(sp||'')+' style="'+bd+'padding:3px 6px;background:#eef1f4;'+(s||'')+'">'+t+'</th>';
+  let h='<table border="1" style="border-collapse:collapse;font-family:sans-serif;font-size:12px">';
+  h+='<tr>'+th('姓名','text-align:left','rowspan="2"')+th('C-Name','text-align:left','rowspan="2"');
+  for(let d=1;d<=N;d++){const ho=isHoliday(d);h+=th(String(d),ho?'background:#fde3d8;color:#b23c17':'');}
+  h+=th('特殊需求','text-align:left','rowspan="2"')+'</tr><tr>';
+  for(let d=1;d<=N;d++){const ho=isHoliday(d);h+=th(weekday(d),'font-weight:normal;'+(ho?'background:#fde3d8;color:#b23c17':''));}
+  h+='</tr>';
+  ROSTER.forEach(p=>{const k=sanitize(p.zh);
+    h+='<tr>'+td(esc(p.zh),'text-align:left')+td(esc(p.en),'text-align:left');
+    for(let d=1;d<=N;d++){let t='',s='';
+      if(desOf(k)[d]){t='DO';s='background:#c6ebc9;color:#15803d;font-weight:bold';}
+      else if(offOf(k)[d]){t='DO';s='background:#e8f3f2;color:#2f6f6a';}
+      else if(lvOf(k)[d]!=null){const l=lvOf(k)[d];t=(l==='A')?'A':('A'+esc(l));s='background:#fdeccf;color:#b45309;font-weight:bold';}
+      else if(isHoliday(d)){s='background:#fdf2ec';}
+      h+=td(t,s);}
+    h+=td(esc((notes[k]||'').replace(/\n/g,' ')),'text-align:left')+'</tr>';
+  });
+  const gs='background:#eef1f4;font-weight:bold;',ws='background:#eaf3f1;font-weight:bold;color:#255a56;';
+  h+='<tr>'+td('休假人數','text-align:left;'+gs)+td('',gs);for(let d=1;d<=N;d++)h+=td(offOnDay(d),gs);h+=td('',gs)+'</tr>';
+  h+='<tr>'+td('可排人力','text-align:left;'+ws)+td('',ws);for(let d=1;d<=N;d++)h+=td(ROSTER.length-offOnDay(d),ws);h+=td('',ws)+'</tr>';
+  return h+'</table>';
+}
+function render(){ $('table').innerHTML=buildTable(); }
+function fname(){ return '預排班_'+($('periodSel').value||(cfg.year+'-'+cfg.month)); }
+function downloadXls(){
+  const doc='<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8"></head><body>'+buildTable()+'</body></html>';
+  dl(new Blob(['\ufeff'+doc],{type:'application/vnd.ms-excel'}), fname()+'.xls');
+}
+function downloadXlsx(){
+  const rows=buildMatrix();
+  if(window.XLSX){try{const ws=XLSX.utils.aoa_to_sheet(rows);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'預排班');XLSX.writeFile(wb,fname()+'.xlsx');return;}catch(e){}}
+  const csv='\ufeff'+rows.map(r=>r.map(c=>{c=String(c);return /[",\n]/.test(c)?'"'+c.replace(/"/g,'""')+'"':c;}).join(',')).join('\r\n');
+  dl(new Blob([csv],{type:'text/csv;charset=utf-8'}), fname()+'.csv');
+}
+function copyText(){ const t=buildMatrix().map(r=>r.join('\t')).join('\n');
+  (navigator.clipboard&&navigator.clipboard.writeText?navigator.clipboard.writeText(t):Promise.reject())
+   .then(()=>$('status').textContent='已複製純文字').catch(()=>{const ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta);$('status').textContent='已複製純文字';}); }
+function dl(blob,name){ const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();document.body.removeChild(a); }
+
+$('btnReload').addEventListener('click',load);
+$('periodSel').addEventListener('change',e=>applyPeriod(e.target.value));
+$('btnXls').addEventListener('click',downloadXls);
+$('btnXlsx').addEventListener('click',downloadXlsx);
+$('btnCopy').addEventListener('click',copyText);
+load();
+</script>
+</body>
+</html>
